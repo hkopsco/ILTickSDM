@@ -1,0 +1,1911 @@
+---
+title: "Illinois Tick Species Distribution Modeling"
+output: html_document
+---
+Notes
+```{r}
+#Notes
+# 8/16 - Combine active occurrence records across years by species with historical paper data added. Attempt Wallace
+
+#10/4/21 - Found occurrence records through VectorMap, GBIF, and others. Using sdm package to generate basic example ensemble prediction map of four target species for Becky due 10/15
+
+
+#06/10/22 - Set Coordinate Uncertainty at 20,000m
+#Combined all occurrence record sets
+
+```
+Set work directory
+```{r}
+setwd("~/Desktop/UIUC Postdoc Materials/Tick Distribution Modelling/SDM Data/final_SDM_input_data")
+```
+Landcover IL Gap veg
+```{r}
+#Land cover 
+ILveg<- raster("ilgapveg_b.tif")
+crs(ILveg)
+ILveglatlong <-projectRaster(ILveg, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+crs(ILveglatlong)
+ILvegcropped<- crop(ILveglatlong, ILbb)
+extent(ILvegcropped)
+plot(ILvegcropped)
+plot(elevcropped)
+plot(biocropped[[1]])
+```
+Load libraries
+```{r include=FALSE}
+###Using sdm package to fit models and predict distributions###
+
+#Install packages
+
+#Loads most updated version of sdm
+library(devtools)
+devtools::install_github('babaknaimi/sdm')
+library(sdm)
+library(mapview)
+install_github("ropensci/MODIStsp")
+library(MODIStsp)
+library("tidyverse")
+library("readr")
+library("Rcpp")
+library("sp")
+library("raster")
+library("maptools")
+install.packages("sf", configure.args = "--with-proj-lib=/usr/local/lib/")
+options(timeout = max(300, getOption("timeout")))
+install.packages("rgdal", configure.args = c("--with-proj-lib=/usr/local/lib/", "--with-proj-include=/usr/local/include/"))
+library("rgdal")
+library("readr")
+library("SDMtune")
+library("SDMPlay") #create null models for AUC comparison
+library("tidyr")
+library("dplyr")
+library("mapview")
+library("maps")
+library("usdm") #usdm package checks for autocorrelation/local spatial association (LISA) in data
+library("conflicted")
+library(spThin)
+```
+
+ENVIR
+```{r}
+##Generate environmental data for Illinois##
+library(sf)
+library(ggplot2)
+library(maptools)
+library(gdalUtilities)
+library(PROJ)
+library(terra)
+library(FedData)
+library(tigris)
+library(stars)
+
+#Extent of IL from Tigris Shapefiles
+IL<- read_sf('IL_BNDY_County/IL_BNDY_County_Ln.shp')
+ILbb<- extent(IL)
+ILpoly <- polygon_from_extent(raster::extent(IL),
+proj4string='+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+#Download BIOCLIM data
+bioclim_only<-raster::getData('worldclim', var='bio', res=2.5)
+(bioclim_only)
+biocropped <-crop(bioclim_only, ILbb) #Crop bioclim to IL
+plot(biocropped)
+extent(biocropped)
+res(biocropped)
+crs(biocropped) #Check projection
+
+#Deer habitat 
+deerhabitat<-raster("WTDUSGS2001HabClipIL.tif")
+plot(deerhabitat)
+crs(deerhabitat) #Check projection
+deercropped<-crop(deerhabitat, ILbb)
+extent(deercropped)
+
+#Elevation
+srtm2003<-raster("srtm2003.tif")
+srtm2004<-raster("srtm2004.tif")
+srtm2005<-raster("srtm2005.tif")
+
+srtm1903<-raster("srtm1903.tif")
+srtm1904<-raster("srtm1904.tif")
+srtm1905<-raster("srtm1905.tif")
+
+srtm1803<-raster("srtm1803.tif")
+srtm1804<-raster("srtm1804.tif")
+srtm1805<-raster("srtm1805.tif")
+
+srtm1703<-raster("srtm1703.tif")
+srtm1704<-raster("srtm1704.tif")
+srtm1705<-raster("srtm1705.tif")
+
+srtm1603<-raster("srtm1603.tif")
+srtm1604<-raster("srtm1604.tif")
+srtm1605<-raster("srtm1605.tif")
+
+elev<-mosaic(srtm2003, srtm2004, srtm2005, srtm1903, srtm1904,srtm1905, srtm1803,srtm1804,srtm1805, srtm1703,srtm1704,srtm1705, fun=mean)
+elevcropped<-crop(elev, ILbb)
+extent(elevcropped)
+res(elevcropped)
+plot(elevcropped)
+crs(elev)
+
+#NLCD 2016 Percent Canopy Cover
+
+canopy<- get_nlcd(
+  template = ILpoly,
+  label = "nlcd2016",
+  year = 2016,
+  dataset = c("canopy"),
+  landmass = "L48",
+  extraction.dir = paste0(tempdir(), "/FedData/"),
+  raster.options = c("COMPRESS=DEFLATE", "ZLEVEL=9"),
+  force.redo = F
+)
+canopylatlong<-projectRaster(canopy, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+crs(canopylatlong)
+canopycropped<- crop(canopylatlong, ILbb)
+crs(canopycropped)
+
+#NLCD 2016 Percent Impervious Coverage
+impervious<-get_nlcd(
+  template = ILpoly,
+  label = "nlcd2016",
+  year = 2016,
+  dataset = c("impervious"),
+  landmass = "L48",
+  extraction.dir = paste0(tempdir(), "/FedData/"),
+  raster.options = c("COMPRESS=DEFLATE", "ZLEVEL=9"),
+  force.redo = F
+)
+imperviouslatlong<-projectRaster(impervious, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+imperviouscropped<- crop(imperviouslatlong, ILbb)
+plot(imperviouscropped)
+
+#NLCD 2016 Landcover
+landcover<- get_nlcd(
+  template = ILpoly,
+  label = "nlcd2016",
+  year = 2016,
+  dataset = c("landcover"),
+  landmass = "L48",
+  extraction.dir = paste0(tempdir(), "/FedData/"),
+  raster.options = c("COMPRESS=DEFLATE", "ZLEVEL=9"),
+  force.redo = F
+)
+plot(landcover)
+#re-project NLCD raster after separating out values
+#landcoverlatlong<-projectRaster(landcover, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+#landcovercropped<- crop(landcoverlatlong, ILbb)
+#plot(landcovercropped)
+#plot(landcoverlatlong)
+```
+
+Separating discrete levels from NLCD
+```{r}
+#Subsetting out discrete variables from the LC dataset
+library(RColorBrewer) 
+library(rasterVis)    
+library(ggplot2)      
+library(colorspace)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(sf)
+
+#Raster Dataframe function
+rasterdf<- function(x, aggregate = 1) {
+   resampleFactor <- aggregate        
+   inputRaster <- x    
+   inCols <- ncol(inputRaster)
+   inRows <- nrow(inputRaster)
+   # Compute numbers of columns and rows in the new raster for mapping
+   resampledRaster <- raster(ncol=(inCols / resampleFactor), 
+                             nrow=(inRows / resampleFactor))
+   # Match to the extent of the original raster
+   extent(resampledRaster) <- extent(inputRaster)
+   # Resample data on the new raster
+   y <- resample(inputRaster,resampledRaster,method='ngb')
+   
+   # Extract cell coordinates  
+   coords <- xyFromCell(y, seq_len(ncell(y)))
+   dat <- stack(as.data.frame(getValues(y)))
+   # Add names - 'value' for data, 'variable' to indicate different raster layers
+   # in a stack
+   names(dat) <- c('value', 'variable')
+   dat <- cbind(coords, dat)
+   dat
+}
+```
+Subsetting out discrete variables from the LC dataset
+```{r}
+#Subsetting out discrete variables from the LC dataset
+
+nlcd16_df <- rasterdf(landcover)
+
+LCcodes <- c(11,12,21,22,23,24,31,41,
+             42,43,52,71,81,82,90,95)
+LCnames <-c(
+  "Water",
+  "IceSnow",
+  "DevelopedOpen",
+  "DevelopedLow",
+  "DevelopedMed",
+  "DevelopedHigh",
+  "Barren",
+  "DeciduousForest",
+  "EvergreenForest",
+  "MixedForest",
+  "ShrubScrub",
+  "GrassHerbaceous",
+  "PastureHay",
+  "CultCrops",
+  "WoodyWetlands",
+  "EmergentHerbWet")
+
+LCcolors <- attr(landcover,"legend")@colortable[LCcodes + 1]
+names(LCcolors) <- as.character(LCcodes)
+LCcolors
+
+
+oldclas <- unique(landcover$nlcd2016_NLCD_Land_Cover_2016)
+oldclas
+
+newclas <- c(1, 2, 2, 2, 2, 3, 4, 4, 4, 5, 5, 5, 6, 7, 7)
+lookup <- data.frame(oldclas, newclas)
+nlcd16_rc <- subs(landcover, lookup)
+newnames <- c("Water",
+               "Developed",
+               "Barren",
+               "Forest",
+               "GrassShrub",
+               "Cropland",
+               "Wetland")
+newcols <- c("mediumblue", 
+             "red2", 
+             "gray60", 
+             "darkgreen", 
+             "yellow2", 
+             "orange4", 
+             "paleturquoise2")
+Water <- nlcd16_rc == 1
+Developed <- nlcd16_rc == 2
+Barren <- nlcd16_rc == 3
+Forest <- nlcd16_rc == 4
+GrassShrub <- nlcd16_rc == 5
+Cropland <- nlcd16_rc == 6
+Wetland <- nlcd16_rc == 7
+
+nlcd16_stk <- stack(Water, Developed, Barren, Forest, GrassShrub, Cropland, Wetland)
+names(nlcd16_stk)
+names(nlcd16_stk) <- newnames
+plot(nlcd16_stk)
+
+#plot each LC type separately
+nlcd16_stk_df <- rasterdf(nlcd16_stk)
+ggplot(data = nlcd16_stk_df) +
+  geom_raster(aes(x = x, y = y, fill = as.character(value))) +
+  scale_fill_manual(name = "Present", 
+                    values = c("gray80", "gray20"),
+                    labels = c("No", "Yes"),
+                    na.translate = FALSE) +  
+  facet_wrap(~ variable, ncol = 3) +
+  coord_sf(expand = F) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        panel.background = element_rect(fill = "white", color = "black"))
+
+#re-project NLCD raster after separating out values
+landcoverlatlong<-projectRaster(nlcd16_stk, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+landcovercropped<- crop(landcoverlatlong, ILbb)
+crs(landcovercropped)
+plot(landcovercropped)
+```
+
+RESAMPLE RASTERS TO FIT BIOCLIM DATA
+```{r}
+#Resampling and stacking environmental raster layers
+landres<-resample(landcovercropped, biocropped, method='bilinear')
+deerres<-resample(deercropped, biocropped, method='bilinear')
+elevres<-resample(elevcropped, biocropped, method='bilinear')
+imperres<-resample(imperviouscropped, biocropped, method='bilinear')
+canopyres<-resample(canopycropped, biocropped, method='bilinear')
+
+#Final environmental predictor variables raster stack (brick didn't work)
+envir<-stack(biocropped, elevres, deerres, landres, imperres, canopyres)
+
+extent(envir)
+names(envir)
+names(envir)[20] <-'Elevation'
+names(envir)[21] <-'DeerHabitat'
+names(envir)[29] <-'Impervious'
+names(envir)[30] <-'Canopy'
+names(envir)
+
+crs(envir)
+```
+
+ISCAP Data cleaning/thinning
+```{r}
+#Loading Ixodes scapularis records 
+Iscap_all <- read.csv('All_Active_Ixsc_Records_061022.csv')
+
+#Remove duplicate records
+Iscap_coords_dups <-Iscap_all %>%
+  dplyr::select(Species_number, Lon, Lat) 
+Iscap_coords_biased<- Iscap_coords_dups %>% dplyr::distinct(Lon, Lat, .keep_all = TRUE)
+
+#Thin records to avoid sampling bias
+Iscap_coords_thinned <-
+  thin( loc.data = Iscap_coords_biased, 
+        lat.col = "Lat", long.col = "Lon", 
+        spec.col = "Species_number", 
+        thin.par = 1, reps = 100, 
+        locs.thinned.list.return = TRUE,
+        write.files = TRUE,
+        max.files = 1,
+        out.dir = "Iscap_thinned/", out.base = "Iscap_thinned",
+        write.log.file = FALSE)
+plotThin(Iscap_coords_thinned)
+
+#Reload thinned data
+Iscap_coords<-read.csv("Iscap_thinned/Iscap_thinned_thin1_new_new.csv") 
+  
+
+#Convert to spatial points dataframe and set projection
+coordinates(Iscap_coords) <- c('Lon', 'Lat')
+summary(Iscap_coords)
+crs.geo <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+proj4string(Iscap_coords) <- crs.geo  # define projection system of our data
+is.projected(Iscap_coords)
+summary(Iscap_coords)
+
+#Plot points to check location
+library(maps)
+names(envir)
+plot(envir[[27]])
+points(Iscap_coords)
+
+```
+Iscap Multicollinearity check
+```{r}
+#Check for multicollinearity amongst environmental variables
+
+#Variance inflation factor
+vif(envir)
+
+#Extract climate values at sites of the species locations
+IS_ex_values<- raster::extract(envir, Iscap_coords)
+head(IS_ex_values)
+
+IS_v_cor<-vifcor(IS_ex_values) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+IS_v_cor
+
+IS_v_step<-vifstep(IS_ex_values) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+IS_v_step
+IS_envir_cur<-exclude(envir, IS_v_step)
+IS_envir_cur
+summary(IS_envir_cur)
+```
+Historical I scap model
+```{r}
+#Building data object into the models
+
+#formula =#species ~ #predictorvariables + coords(x+y) +time (eventDate)
+
+IS_data_cur <- sdmData(Species_number~.,Iscap_coords, predictors = IS_envir_cur, bg =
+               list(method='gRandom', n=50))
+IS_data_cur
+
+#Fit model
+#IS_model_1 <- sdm(Species_number~., data = IS_data_cur, methods=c('glm','gam','bioclim','brt','cart','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+##bioclim, cart, and gam didn't work
+
+IS_model_2<- sdm(Species_number~., data = IS_data_cur, methods=c('glm','brt','maxent','rf','mars', 'svm'), replication=c('cv','boot'), test.p=30,n=5, 
+         parallelSetting=list(ncore=4, method='parallel'))
+
+library(shiny)
+gui(IS_model_1)
+gui(IS_model_2)
+
+#Variable importance
+IS_vi <- getVarImp(IS_model_2,id=91:120,wtest='test.dep')
+plot(IS_vi, 'tss')
+IS_vi
+
+#Species response curves
+IS_LC_response_curve<- rcurve(IS_model_2, id=91:120,n=(c('Wetland','Elevation', 'Water','GrassShrub', 'Cropland', 'Barren', 'Forest')), gg=TRUE, mean = TRUE, confidence = TRUE, size=80)  +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_LC_response_curve
+
+IS_climate_response_curve<- rcurve(IS_model_2, n=(c('bio3', 'bio7', 'bio8','bio9', 'bio10', 'bio13')), id=91:120, gg=TRUE, mean = TRUE, confidence = TRUE, size=80)  +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_climate_response_curve
+
+#Generate predictions
+IS_predict_brick<- predict(IS_model_2, IS_envir_cur, mean=TRUE, filename='iscap_cur_pred.tif', overwrite=T)
+IS_predict<-stack(IS_predict_brick)
+
+#Generate ensemble
+IS_ensemble_hist<- ensemble(IS_model_2, IS_envir_cur, filename = 'Iscap_ensemble_hist_082222.tif', setting = list(method = 'mean-weighted', stat = 'tss', opt=2), overwrite = TRUE)
+IS_ensemble_hist
+plot(IS_ensemble_hist)
+ggsave(filename = "final_SDM_input_data/Iscap_Rplot.tiff", width = 50, height = 50, device='tiff', dpi=700, limitsize = FALSE)
+
+plot(IS_ensemble_cur_AUC) #Current mean-weighted ensemble raster.
+#’mean-weighted’: A two step mean that is when several replications are fitted for each modelling methods (e.g., through bootstrapping or cross-validation), using this method an unweighted mean is taken over the predicted values of different replications of each method (i.e., within model averaging), then a weighted mean is used to combine them into final ensemble values (i.e., between models averaging).
+```
+Iscap 2050
+```{r}
+#Future range projections for I.scapularis (http://www.worldclim.com/cmip5_2.5m)
+
+#Variables from 2041-2060 avg.
+biof50<-raster::getData('CMIP5', var='bio', res=2.5, rcp=85, model='AC', year=50) #4km resolution #at equator, rcp 8.5, ACCESS 1-0, avg. from 2041–2060.
+plot(biof50[[1]])
+names(biof50)<-names(bioclim_only)
+names(biof50)
+
+#Crop raster to extent of IL
+biof50cropped <-crop(biof50, ILbb)
+envir50<-stack(biof50cropped, elevres, deerres, landres, imperres, canopyres)
+names(envir50)[20] <-'Elevation'
+names(envir50)[21] <-'DeerHabitat'
+names(envir50)[29] <-'Impervious'
+names(envir50)[30] <-'Canopy'
+names(envir50)
+crs(envir50)
+
+#Extract environmental points that correspond to tick occurrence data for 2050
+IS_ex_values_50<- raster::extract(envir50, Iscap_coords)
+head(IS_ex_values_50)
+
+IS_v_cor_50<-vifcor(IS_ex_values_50) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+IS_v_cor_50
+
+IS_v_step_50<-vifstep(IS_ex_values_50) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+IS_v_step_50
+IS_envir_50<-exclude(envir50, IS_v_step_50)
+
+#Generate predictions for 2050
+IS_data_50 <- sdmData(Species_number~.,Iscap_coords, predictors = IS_envir_50, bg =
+               list(method='gRandom', n=50))
+IS_model_2_50<- sdm(Species_number~., data = IS_data_50, methods=c('glm','brt','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, 
+         parallelSetting=list(ncore=4, method='parallel'))
+
+gui(IS_model_2_50)
+
+#Variable importance
+vi_IS50 <- getVarImp(IS_model_2_50,id=31:60,wtest='test.dep')
+plot(vi_IS50, 'tss')
+vi_IS50
+
+IS_50_LC_response_curve<- rcurve(IS_model_2_50, id=31:60,n=(c('Wetland', 'Water', 'Cropland', 'Elevation')), gg=TRUE, mean = TRUE, confidence = TRUE, size=50) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_50_LC_response_curve
+
+IS_50_climate_response_curve<- rcurve(IS_model_2_50, n=(c('bio3','bio4', 'bio8', 'bio9', 'bio15', 'bio18')), id=91:120, gg=TRUE, mean = TRUE, confidence = TRUE, size=50) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_50_climate_response_curve
+
+```
+Iscap 2070
+```{r}
+#Variables from 2061-2080 avg.(2070)
+biof70<-raster::getData('CMIP5', var='bio', res=2.5, rcp=85, model='AC', year=70) #4.5 km resolution at equator, rcp 8.5, ACCESS 1-0, avg. from 2061-2080.
+plot(biof70[[1]])
+names(biof70)<-names(bioclim_only)
+names(biof70)
+
+biof70cropped <-crop(biof70, ILbb)
+envir70<-stack(biof70cropped, elevres, deerres, landres, imperres, canopyres)
+names(envir70)[20] <-'Elevation'
+names(envir70)[21] <-'DeerHabitat'
+names(envir70)[29] <-'Impervious'
+names(envir70)[30] <-'Canopy'
+names(envir70)
+crs(envir70)
+
+IS_ex_values_70<- raster::extract(envir70, Iscap_coords)
+head(IS_ex_values_70)
+IS_v_cor_70<-vifcor(IS_ex_values_70) 
+IS_v_cor_70
+
+IS_v_step_70<-vifstep(IS_ex_values_70) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+IS_v_step_70
+IS_envir_70<-exclude(envir70, IS_v_step_70)
+
+#Generate predictions for 2070
+IS_data_70 <- sdmData(Species_number~.,Iscap_coords, predictors = IS_envir_70, bg =
+               list(method='gRandom', n=200))
+IS_model_2_70<- sdm(Species_number~., data = IS_data_70, methods=c('glm','brt','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, 
+         parallelSetting=list(ncore=4, method='parallel'))
+
+gui(IS_model_2_70)
+
+#Variable importance
+ISvi_70 <- getVarImp(IS_model_2_70,id=31:60,wtest='test.dep')
+plot(ISvi_70, 'tss')
+
+ISvi_70
+
+IS_70_LC_response_curve<- rcurve(IS_model_2_70, id=31:60,n=(c('Wetland','Water', 'Cropland', 'Elevation')), gg=TRUE, mean = TRUE, confidence = TRUE, size=80)  +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_70_LC_response_curve
+
+IS_70_climate_response_curve<- rcurve(IS_model_2_70, n=(c('bio3','bio4', 'bio8', 'bio9', 'bio15', 'bio18')), id=31:60, gg=TRUE, mean = TRUE, confidence = TRUE, size=80)  +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_70_climate_response_curve
+```
+Final ensembles and plots
+```{r}
+#Final Ensembles for current, 2050 and 2070#
+cl<-colorRampPalette(c('lightyellow', 'yellow', 'orange', 'red', 'darkred', 'black'))
+
+#Historic
+IS_ensemble_hist<- ensemble(IS_model_2, IS_envir_cur, filename = 'Iscap_ensemble_hist.img', setting = list(method = 'mean-weighted', stat = 'tss', opt=2), overwrite = TRUE)
+IS_ensemble_hist
+tiff("Iscap_ensemble_hist_082222.tif", compression = "zip")
+IS_ensemble_hist_reprojected<-projectRaster(IS_ensemble_hist, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+plot(IS_ensemble_hist_reprojected, col=cl(1000))
+dev.off()
+IS_vi <- getVarImp(IS_model_2,id=152:180,wtest='test.dep')
+plot(IS_vi, 'tss')
+IS_vi
+IS_LC_response_curve<- rcurve(IS_model_2, id=152:180,n=(c('Wetland', 'Water','GrassShrub', 'Cropland', 'Barren', 'Forest')), gg=TRUE, mean = TRUE, confidence = TRUE, size=80)  +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_LC_response_curve
+
+IS_climate_response_curve<- rcurve(IS_model_2, n=(c('bio3', 'bio7', 'bio8','bio10', 'bio13')), id=152:180, gg=TRUE, mean = TRUE, confidence = TRUE, size=80)  +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_climate_response_curve
+#############################
+
+#2050
+IS_ensemble_fut50<-ensemble(IS_model_2_50, IS_envir_50, filename = 'Iscap_ensemble_2050_082222.tif',setting = list(method='mean-weighted', stat='tss', opt=2), overwrite=TRUE)
+crs(IS_ensemble_fut50)
+IS_ensemble_fut50_reprojected<-projectRaster(IS_ensemble_fut50, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+crs(IS_ensemble_fut50_reprojected)
+tiff("IS_ensemble_fut50_reprojected.tif", compression = "zip")
+
+plot(IS_ensemble_fut50, col=cl(1000))
+dev.off()
+gui(IS_model_2_50)
+vi_IS50 <- getVarImp(IS_model_2_50,id=31:60,wtest='test.dep')
+plot(vi_IS50, 'tss')
+vi_IS50
+IS_50_LC_response_curve<- rcurve(IS_model_2_50, id=31:60,n=(c('Wetland', 'Water', 'Cropland', 'Elevation')), gg=TRUE, mean = TRUE, confidence = TRUE, size=50) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_50_LC_response_curve
+
+IS_50_climate_response_curve<- rcurve(IS_model_2_50, n=(c('bio3','bio4', 'bio8', 'bio9', 'bio15', 'bio18')), id=91:120, gg=TRUE, mean = TRUE, confidence = TRUE, size=50) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_50_climate_response_curve
+#################################
+
+#2070
+IS_ensemble_fut70<-ensemble(IS_model_2_70, IS_envir_70, filename = 'Iscap_ensemble_2070_082222.tif', setting = list(method='mean-weighted', stat='tss', opt=2), overwrite=TRUE )
+tiff("Iscap_ensemble_2070_082222.tif", compression = "zip")
+plot(IS_ensemble_fut70, col=cl(1000))
+dev.off()
+gui(IS_model_2_70)
+crs(IS_ensemble_fut70)
+IS_ensemble_fut70_reprojected<-projectRaster(IS_ensemble_fut70, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+crs(IS_ensemble_fut70_reprojected)
+plot(IS_ensemble_fut70_reprojected)
+
+ISvi_70 <- getVarImp(IS_model_2_70,id=31:60,wtest='test.dep')
+plot(ISvi_70, 'tss')
+ISvi_70
+
+IS_70_LC_response_curve<- rcurve(IS_model_2_70, id=31:60,n=(c('Wetland','Water', 'Cropland', 'Elevation')), gg=TRUE, mean = TRUE, confidence = TRUE, size=80)  +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_70_LC_response_curve
+
+IS_70_climate_response_curve<- rcurve(IS_model_2_70, n=(c('bio3','bio4', 'bio8', 'bio9', 'bio15', 'bio18')), id=31:60, gg=TRUE, mean = TRUE, confidence = TRUE, size=80)  +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+IS_70_climate_response_curve
+```
+Interactive maps
+```{r}
+#Mapping Iscap Predictions in Mapview
+library(leaflet)
+library(mapview)
+library(sf)
+#Load IL shapefile for outline
+IL_boundaries<- read_sf('IL_BNDY_County/IL_BNDY_County_Ln.shp')
+#OpenStreetMap
+#Current I.scap predicted distribution
+mapviewOptions(basemaps = "OpenTopoMap",
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+                 legend.pos = "topright",
+                 legend.opacity = 0.9)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(IS_ensemble_cur, col.regions=cl(1000), legend=TRUE, layer.name = 'Current Probability of I.scapularis Occurrence')
+
+#Future I.scap predicted distribution - 2050
+  mapviewOptions(basemaps = "OpenTopoMap",
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+               legend.pos = "topright",
+               legend.opacity = 0.9)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(IS_ensemble_fut50, col.regions=cl(1000), legend=TRUE, layer.name = 'Probability of Future I.scapularis Distribution in 2050')   
+  
+#Future I.scap predicted distribution - 2070
+  mapviewOptions(basemaps = "OpenTopoMap",
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+               legend.pos = "topright",
+               legend.opacity = 0.9)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(IS_ensemble_fut70, col.regions=cl(1000), legend=TRUE, layer.name = 'Probability of Future I.scapularis Distribution in 2070')   
+```
+
+AMAM - Read, thin and clean occurrence points
+```{r}
+## SDM Ensemble for Amblyomma americanum ##
+
+AA_all<-read.csv('All_Active_AmAm_records_061022.csv')
+
+#Remove duplicate records
+AA_coords_dups <-AA_all %>%
+  dplyr::select(Species_number, Lon, Lat) 
+AA_coords_biased<- AA_coords_dups %>% dplyr::distinct(Lon, Lat, .keep_all = TRUE)
+
+#Thin records to avoid sampling bias
+AA_coords_thinned <-
+  thin( loc.data = AA_coords_biased, 
+        lat.col = "Lat", long.col = "Lon", 
+        spec.col = "Species_number", 
+        thin.par = 1, reps = 100, 
+        locs.thinned.list.return = TRUE,
+        write.files = TRUE,
+        max.files = 1,
+        out.dir = "AA_thinned/", out.base = "AA_thinned",
+        write.log.file = FALSE)
+plotThin(AA_coords_thinned)
+
+#Reload thinned data
+AA_coords<-read.csv("AA_thinned/AA_thinned_thin1_new_new.csv") 
+  
+#Convert to spatial points dataframe and set projection
+coordinates(AA_coords) <- c('Lon', 'Lat')
+summary(AA_coords)
+crs.geo <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+proj4string(AA_coords) <- crs.geo  # define projection system of our data
+is.projected(AA_coords)
+summary(AA_coords)
+
+#Plot points to check location
+library(maps)
+names(envir)
+plot(envir[[20]])
+points(AA_coords)
+map(database = "usa")
+points(AA_coords)
+```
+Assess collinearity in historical climate
+```{r}
+#Check for multicollinearity amongst bioclim and other environmental variables
+
+#Variance inflation factor
+vif(envir)
+
+#Extract variable values at sites of the species locations
+AA_ex_values<- raster::extract(envir, AA_coords)
+head(AA_ex_values)
+
+AA_v_cor<-vifcor(AA_ex_values) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+AA_v_cor
+
+AA_v_step<-vifstep(AA_ex_values) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+AA_v_step
+AA_envir_cur<-exclude(envir, AA_v_step)
+
+```
+AA Historical Climate Model
+```{r}
+#Building data object into the models
+
+AA_data_cur <- sdmData(Species_number~.,AA_coords, predictors = AA_envir_cur, bg =
+               list(method='gRandom', n=100))
+AA_data_cur
+
+#Fit current habitat model
+#AA_model_1 <- sdm(Species_number~., data = AA_data_cur, methods=c('glm','gam','bioclim','brt','cart','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+#(AA_model_1)#GAM and CART did not run successfully
+
+AA_model_2<- sdm(Species_number~., data = AA_data_cur, methods=c('glm','brt','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+
+library(shiny)
+gui(AA_model_2)
+
+AA_vi_hist<- getVarImp(AA_model_2,id=91:120,wtest='test.dep') 
+plot(AA_vi_hist, 'tss')
+AA_vi_hist
+
+#Species response curves
+AA_hist_LC_response_curve<- rcurve(AA_model_2, id=91:120,n=(c('Wetland', 'Water', 'Developed', 'Barren', 'Elevation', 'Forest', 'GrassShrub')), gg=TRUE, mean = TRUE, confidence = TRUE, size=60) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AA_hist_LC_response_curve
+
+AA_hist_climate_response_curve<- rcurve(AA_model_2, n=(c('bio2','bio8', 'bio9','bio10', 'bio15', 'bio18')), id=91:120, gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AA_hist_climate_response_curve
+
+#Generate current climate weighted ensemble
+AA_ensemble_cur <- ensemble(AA_model_2, AA_envir_cur, filename = 'AA_ensemble_hist_082222.tif', setting = list(method='mean-weighted', stat='tss', opt=2), overwrite=TRUE)
+AA_ensemble_cur
+AA_ensemble_hist_reprojected<- projectRaster(AA_ensemble_cur, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+
+plot(AA_ensemble_hist_reprojected) #Current weighted ensemble
+```
+AA 2050 projections
+```{r}
+# Future projections
+#Future range projections for A. americanum(http://www.worldclim.com/cmip5_2.5m) under two time periods
+
+#Variables from 2041-2060 avg.
+biof50<-raster::getData('CMIP5', var='bio', res=2.5, rcp=85, model='AC', year=50) #4km resolution #at equator, rcp 8.5, ACCESS 1-0, avg. from 2041–2060.
+plot(biof50[[1]])
+names(biof50)<-names(bioclim_only)
+
+#Crop future climate raster to extent of IL
+biof50cropped <-crop(biof50, ILbb)
+envir50<-stack(biof50cropped, elevres, deerres, landres, imperres, canopyres)
+names(envir50)[20] <-'Elevation'
+names(envir50)[21] <-'DeerHabitat'
+names(envir50)[29] <-'Impervious'
+names(envir50)[30] <-'Canopy'
+names(envir50)
+crs(envir50)
+
+#Extract environmental points that correspond to AA occurrence data for specific time period
+AA_ex_values_50<- raster::extract(envir50, AA_coords)
+head(AA_ex_values_50)
+
+AA_v_cor_50<-vifcor(AA_ex_values_50) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+AA_v_cor_50
+
+AA_v_step_50<-vifstep(AA_ex_values_50) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+AA_v_step_50
+AA_envir_50<-exclude(envir50, AA_v_step_50)
+
+#Generate AA predictions for 2050
+AA_data_50 <- sdmData(Species_number~., AA_coords, predictors = AA_envir_50, bg =
+               list(method='gRandom', n=100))
+AA_model_2_50<- sdm(Species_number~., data = AA_data_50, methods=c('glm','brt','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+
+gui(AA_model_2_50)
+
+AA_ensemble_fut50<-ensemble(AA_model_2_50, AA_envir_50, filename = 'AA_ensemble_2050_082222.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+
+AA_ensemble_fut50_reprojected<-projectRaster(AA_ensemble_fut50, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+```
+AA 2070
+```{r}
+#Variables from 2061-2080 avg.
+biof70<-raster::getData('CMIP5', var='bio', res=2.5, rcp=85, model='AC', year=70) #4.5 km resolution at equator, rcp 8.5, ACCESS 1-0, avg. from 2061-2080.
+#Crop future climate raster to extent of IL
+names(biof70)<-names(bioclim_only)
+names(biof70)
+biof70cropped <-crop(biof70, ILbb)
+envir70<-stack(biof70cropped, elevres, deerres, landres, imperres, canopyres)
+names(envir70)[20] <-'Elevation'
+names(envir70)[21] <-'DeerHabitat'
+names(envir70)[29] <-'Impervious'
+names(envir70)[30] <-'Canopy'
+names(envir70)
+
+#Extract environmental points that correspond to AA occurrence data for specific time period
+AA_ex_values_70<- raster::extract(envir70, AA_coords)
+head(AA_ex_values_70)
+
+AA_v_cor_70<-vifcor(AA_ex_values_70) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+AA_v_cor_70
+
+AA_v_step_70<-vifstep(AA_ex_values_70) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+AA_v_step_70
+AA_envir_70<-exclude(envir70, AA_v_step_70)
+
+#Generate predictions for 2070
+AA_data_70 <- sdmData(Species_number~.,AA_coords, predictors = AA_envir_70, bg =
+               list(method='gRandom', n=100))
+AA_model_2_70<- sdm(Species_number~., data = AA_data_70, methods=c('glm','brt','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, 
+         parallelSetting=list(ncore=4, method='parallel'))
+
+AA_ensemble_fut70<-ensemble(AA_model_2_70, AA_envir_70, filename = 'AA_ensemble_2070_082222.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+plot(AA_ensemble_fut70)
+
+AA_ensemble_fut70_reprojected<-projectRaster(AA_ensemble_fut70, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+```
+Final AA plots and images
+```{r}
+#Final A. americanum ensemble rasters for current, 2050, 2070
+cl<-colorRampPalette(c('lightyellow', 'yellow', 'orange', 'red', 'darkred', 'black'))
+
+#Historical
+tiff("AA_ensemble_hist_082222.tiff", compression = "zip")
+plot(AA_ensemble_cur, col=cl(1000))
+dev.off()
+gui(AA_model_2)
+AA_vi_current<-getVarImp(AA_model_2,id=91:120,wtest='test.dep')
+plot(AA_vi_current)
+
+
+AA_hist_LC_response_curve<- rcurve(AA_model_2, id=91:120,n=(c('Wetland','Water', 'Developed', 'Barren', 'Elevation', 'Forest', 'GrassShrub', 'Wetland')), gg=TRUE, mean = TRUE, confidence = TRUE, size=60) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AA_hist_LC_response_curve
+
+AA_hist_climate_response_curve<- rcurve(AA_model_2, n=(c('bio2', 'bio8', 'bio9', 'bio10', 'bio15', 'bio18')), id=91:120, gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AA_hist_climate_response_curve
+
+
+#2050
+tiff("AA_ensemble_2050_082222.tif", compression = "zip")
+plot(AA_ensemble_fut50, col=cl(1000))
+dev.off()
+gui(AA_model_2_50)
+AA_vi_2050<-getVarImp(AA_model_2_50,id=91:120,wtest='test.dep')
+plot(AA_vi_2050)
+AA_vi_2050
+
+AA_2050_LC_response_curve<- rcurve(AA_model_2_50, id=91:120,n=(c('Wetland', 'Water', 'Developed', 'Barren', 'Elevation', 'Forest', 'GrassShrub')), gg=TRUE, mean = TRUE, confidence = TRUE, size=60) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AA_2050_LC_response_curve
+
+AA_2050_climate_response_curve<- rcurve(AA_model_2_50, n=(c('bio3', 'bio7', 'bio8', 'bio9', 'bio10', 'bio15', 'bio17', 'bio18')), id=91:120, gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AA_2050_climate_response_curve
+
+#2070
+gui(AA_model_2_70)
+AA_vi_2070<-getVarImp(AA_model_2_70,id=91:120,wtest='test.dep')
+plot(AA_vi_2070)
+tiff("AA_ensemble_2070_082222.tif", compression = "zip")
+dev.off
+plot(AA_ensemble_fut70, col=cl(1000))
+dev.off()
+
+AA_2070_LC_response_curve<- rcurve(AA_model_2_70, id=91:120,n=(c('Wetland', 'Cropland', 'Developed', 'Barren', 'Elevation', 'Forest')), gg=TRUE, mean = TRUE, confidence = TRUE, size=60) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AA_2070_LC_response_curve
+
+AA_2070_climate_response_curve<- rcurve(AA_model_2_70, n=(c('bio8', 'bio9', 'bio15', 'bio18')), id=91:120, gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AA_2070_climate_response_curve
+```
+Interactive map
+```{r}
+#Current A. americanum predicted distribution
+mapviewOptions(basemaps = "OpenStreetMap",
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+                 legend.pos = "topright",
+                 legend.opacity = 0.9)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(AA_ensemble_cur, col.regions=cl(1000), legend=TRUE, layer.name = 'Current Probability of A. americanum Occurrence')
+
+  
+#Future AA predicted distribution avg. 2050
+  mapviewOptions((basemaps = "OpenStreetMap"),
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+               legend.pos = "topright",
+               legend.opacity = 1)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(AA_ensemble_fut50, col.regions=cl(1000), legend=TRUE, layer.name = 'Probability of Future A. americanum Distribution 2050')   
+  
+#Future AA predicted distribution avg. 2070
+  mapviewOptions((basemaps = "OpenStreetMap"),
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+               legend.pos = "topright",
+               legend.opacity = 1)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(AA_ensemble_fut70, col.regions=cl(1000), legend=TRUE, layer.name = 'Probability of Future A. americanum Distribution 2070')   
+```
+
+DEVA
+```{r}
+#SDM Ensemble for Dermacentor variabilis#
+
+#Loading D. variabilis records 
+DV_all<- read.csv('All_Active_DeVa_records_061022.csv')
+
+#Remove duplicate records
+DV_coords_dups <-DV_all %>%
+  dplyr::select(Species_number, Lon, Lat)
+DV_coords_dups$Lon<-as.numeric(DV_coords_dups$Lon)
+DV_coords_dups$Lat<-as.numeric(DV_coords_dups$Lat)
+DV_coords_biased<- DV_coords_dups %>% dplyr::distinct(Lon, Lat, .keep_all = TRUE) %>%
+  drop_na()
+
+#Thin records to avoid sampling bias
+DV_coords_thinned <-
+  thin( loc.data = DV_coords_biased, 
+        lat.col = "Lat", long.col = "Lon", 
+        spec.col = "Species_number", 
+        thin.par = 1, reps = 100, 
+        locs.thinned.list.return = TRUE,
+        write.files = TRUE,
+        max.files = 1,
+        out.dir = "DV_thinned/", out.base = "DV_thinned",
+        write.log.file = FALSE)
+plotThin(DV_coords_thinned)
+
+DV_coords<- read.csv('DV_thinned/DV_thinned_thin1.csv')
+
+#Convert to spatial points dataframe and set projection
+coordinates(DV_coords) <- c('Lon', 'Lat')
+summary(DV_coords)
+crs.geo <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+proj4string(DV_coords) <- crs.geo  # define projection system of our data
+is.projected(DV_coords)
+summary(DV_coords)
+
+#Plot points to check location
+library(maps)
+names(envir)
+plot(envir[[20]])
+points(DV_coords)
+map(database = "usa")
+points(DV_coords)
+
+```
+DV Collinearity check
+```{r}
+#Check for multicollinearity amongst environmental variables for the historical climate
+
+#Variance inflation factor
+vif(envir)
+
+#Extract climate values at sites of the species locations
+DV_ex_values<- raster::extract(envir, DV_coords)
+head(DV_ex_values)
+
+DV_v_cor<-vifcor(DV_ex_values) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+DV_v_cor
+
+DV_v_step<-vifstep(DV_ex_values) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+DV_v_step
+DV_envir_cur<-exclude(envir, DV_v_step)
+DV_envir_cur
+```
+DV Historical model
+```{r}
+#Building data object into the models for the historical climate
+
+DV_data_cur <- sdmData(Species_number~.,DV_coords, predictors = DV_envir_cur, bg =
+               list(method='gRandom', n=300))
+DV_data_cur
+
+#Fit current habitat model
+DV_model_1 <- sdm(Species_number~., data = DV_data_cur, methods=c('glm','gam','bioclim','brt','cart','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+#(DV_model_1) #GAM, Bioclim, CART didn't work
+
+DV_model_2<- sdm(Species_number~., data = DV_data_cur, methods=c('glm','brt','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+
+library(shiny)
+gui(DV_model_1)
+gui(DV_model_2)
+
+#Current climate variable importance
+DV_vi_hist<- getVarImp(DV_model_2,id=151:180,wtest='test.dep')
+plot(DV_vi_hist)
+DV_vi_hist
+
+#Species response curves for historical climate
+DV_hist_LC_responsecurve <-rcurve(DV_model_2, id=151:180, n=(c("Elevation", "Water", "Barren", "Forest", "GrassShrub", "Cropland", "Wetland")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+DV_hist_LC_responsecurve
+
+DV_hist_climate_responsecurve<-  rcurve(DV_model_2,id=151:180, n=(c("bio2", "bio7", "bio8", "bio9","bio10", "bio18")),, gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) + 
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+DV_hist_climate_responsecurve
+
+#Generate predictions for historical distribution
+#DV_predict <-predict(DV_model_2, DV_envir_cur, filename='DV_predictions_current.img', overwrite=TRUE)
+
+#Generate current climate weighted ensemble
+DV_ensemble_hist <- ensemble(DV_model_2, DV_envir_cur, filename = 'DV_ensemble_hist_082222.tif', setting = list(method='mean-weighted', stat='tss', opt=2), overwrite=TRUE)
+DV_ensemble_hist
+plot(DV_ensemble_hist) #Current weighted ensemble
+tiff("DV_ensemble_hist_082222.tiff", compression = "zip")
+```
+DV 2050
+```{r}
+#Extract environmental points that correspond to DV occurrence data for 2050
+
+DV_ex_values_50<- raster::extract(envir50, DV_coords)
+head(DV_ex_values_50)
+
+DV_v_cor_50<-vifcor(DV_ex_values_50) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+DV_v_cor_50
+
+DV_v_step_50<-vifstep(DV_ex_values_50) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+DV_v_step_50
+DV_envir_50<-exclude(envir50, DV_v_step_50)
+
+#Generate predictions for 2050
+DV_data_50 <- sdmData(Species_number~.,DV_coords, predictors = DV_envir_50, bg =
+               list(method='gRandom', n=300))
+DV_model_2_50<- sdm(Species_number~., data = DV_data_50, methods=c('glm','brt','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, 
+         parallelSetting=list(ncore=4, method='parallel'))
+
+gui(DV_model_2_50)
+
+
+DV_ensemble_fut50<-ensemble(DV_model_2_50, DV_envir_50, filename = 'DV_ensemble_2050_082222.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+plot(DV_ensemble_fut50)
+
+#2050 climate variable importance
+DV_vi_2050<- getVarImp(DV_model_2_50,id=121:150,wtest='test.dep')
+plot(DV_vi_2050)
+DV_vi_2050
+
+#Species response curves for 2050
+DV_2050_LC_responsecurve<-  rcurve(DV_model_2_50, id=91:120, n=(c("Wetland", "Water", "GrassShrub", "Forest", "Elevation", "Cropland", "Barren")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+DV_2050_LC_responsecurve
+
+DV_2050_climate_responsecurve <-rcurve(DV_model_2_50,id=91:120, n=(c("bio3", "bio4", "bio8", "bio9","bio15", "bio18")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+DV_2050_climate_responsecurve
+DV_2050_LC_responsecurve
+
+DV_ensemble_fut50<-ensemble(DV_model_2_50, DV_envir_50, filename = 'DV_ensemble_2050_082222.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+plot(DV_ensemble_fut50)
+```
+DV 2070
+```{r}
+#Extract environmental points that correspond to DV occurrence data for 2070
+DV_ex_values_70<- raster::extract(envir70, DV_coords)
+head(DV_ex_values_70)
+
+DV_v_cor_70<-vifcor(DV_ex_values_70) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+DV_v_cor_70
+
+DV_v_step_70<-vifstep(DV_ex_values_70) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+DV_v_step_70
+DV_envir_70<-exclude(envir70, DV_v_step_70)
+
+#Generate predictions for 2070
+DV_data_70 <- sdmData(Species_number~.,DV_coords, predictors = DV_envir_70, bg =
+               list(method='gRandom', n=300))
+DV_model_2_70<- sdm(Species_number~., data = DV_data_70, methods=c('glm','brt','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, 
+         parallelSetting=list(ncore=4, method='parallel'))
+gui(DV_model_2_70)
+
+#2050 climate variable importance
+DV_vi_2070<- getVarImp(DV_model_2_70,id=121:150,wtest='test.dep')
+plot(DV_vi_2070)
+DV_vi_2070
+
+#Species response curves for 2070
+DV_2070_LC_responsecurve<-  rcurve(DV_model_2_70, id=91:120, n=(c("Wetland", "Water", "GrassShrub", "Forest", "Elevation", "Cropland", "Barren")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+DV_2070_LC_responsecurve
+
+DV_2070_climate_responsecurve <-rcurve(DV_model_2_70,id=91:120, n=(c("bio3", "bio4", "bio6", "bio8", "bio9","bio15", "bio18")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+DV_2070_climate_responsecurve
+DV_2070_LC_responsecurve
+
+DV_ensemble_fut70<-ensemble(DV_model_2_70, DV_envir_70, filename = 'DV_ensemble_2070_082222.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+plot(DV_ensemble_fut70)
+```
+
+Final plots
+```{r}
+#Final D. variabilis ensemble rasters for current, 2050, 2070
+cl<-colorRampPalette(c('lightyellow', 'yellow', 'orange', 'red', 'darkred', 'black'))
+
+#Current
+DV_ensemble_hist <- ensemble(DV_model_2, DV_envir_cur, filename = 'DV_ensemble_hist_082222.tif', setting = list(method='mean-weighted', stat='tss', opt=2), overwrite=TRUE)
+tiff("DV_ensemble_hist_082222.tiff", compression = "zip")
+plot(DV_ensemble_hist, col=cl(1000))
+gui(DV_model_2)
+DV_vi_hist<-getVarImp(DV_model_2,id=151:180,wtest='test.dep')
+plot(DV_vi_hist)
+dev.off()
+
+#Reproject final ensemble raster
+DV_ensemble_hist_reprojected<-projectRaster(DV_ensemble_hist, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+
+DV_hist_LC_responsecurve <-rcurve(DV_model_2, id=151:180, n=(c("Elevation", "Water", "Barren", "Forest", "GrassShrub", "Cropland", "Wetland")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+DV_hist_LC_responsecurve
+
+DV_hist_climate_responsecurve<-  rcurve(DV_model_2,id=151:180, n=(c("bio2", "bio7", "bio8", "bio9","bio10", "bio18")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) + 
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+DV_hist_climate_responsecurve
+
+#2050
+DV_ensemble_fut50<-ensemble(DV_model_2_50, DV_envir_50, filename = 'DV_ensemble_2050_082222.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+plot(DV_ensemble_fut50, col=cl(1000))
+gui(DV_model_2_50)
+DV_vi_2050<-getVarImp(DV_model_2_50,id=91:120,wtest='test.dep')
+plot(DV_vi_2050)
+dev.off()
+tiff("DV_ensemble_2050_082222.tiff", compression = "zip")
+
+DV_ensemble_fut50_reprojected<-projectRaster(DV_ensemble_fut50, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+
+#2070
+gui(DV_model_2_70)
+DV_vi_2070<-getVarImp(DV_model_2_70,id=91:120,wtest='test.dep')
+plot(DV_vi_2070)
+DV_ensemble_fut70<-ensemble(DV_model_2_70, DV_envir_70, filename = 'DV_ensemble_2070_082222.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+plot(DV_ensemble_fut70, col=cl(1000))
+dev.off()
+tiff("DV_ensemble_2070_082222.tiff", compression = "zip")
+
+DV_ensemble_fut70_reprojected<-projectRaster(DV_ensemble_fut70, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+```
+Interactive Map
+```{r}
+#Current DEVA predicted distribution
+mapviewOptions(basemaps = "OpenStreetMap",
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+                 legend.pos = "topright",
+                 legend.opacity = 0.9)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(DV_ensemble_cur, col.regions=cl(1000), legend=TRUE, layer.name = 'Current Probability of D. variabilis Occurrence')
+
+  
+#Future DV predicted distribution avg. 2050
+  mapviewOptions((basemaps = "OpenStreetMap"),
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+               legend.pos = "topright",
+               legend.opacity = 1)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(DV_ensemble_fut50, col.regions=cl(1000), legend=TRUE, layer.name = 'Probability of Future D. variabilis Distribution 2050')   
+  
+#Future DV predicted distribution avg. 2070
+  mapviewOptions((basemaps = "OpenStreetMap"),
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+               legend.pos = "topright",
+               legend.opacity = 1)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(DV_ensemble_fut70, col.regions=cl(1000), legend=TRUE, layer.name = 'Probability of Future D. variabilis Distribution 2070')   
+
+```
+
+AMMA
+```{r}
+#SDM Ensemble for Amblyomma maculatum#
+
+#Loading A.maculatum records 
+AM_all<- read.csv('All_Active_AmMa_records_061022.csv') #20 records 
+
+#Remove duplicate records
+AM_coords_dups <-AM_all %>%
+  dplyr::select(Species_number, Lon, Lat) #17 records
+AM_coords_biased<- AM_coords_dups %>% dplyr::distinct(Lon, Lat, .keep_all = TRUE) 
+
+AM_coords_thinned <-
+  thin( loc.data = AM_coords_biased, 
+        lat.col = "Lat", long.col = "Lon", 
+        spec.col = "Species_number", 
+        thin.par = 1, reps = 100, 
+        locs.thinned.list.return = TRUE,
+        write.files = TRUE,
+        max.files = 1,
+        out.dir = "AM_thinned/", out.base = "AM_thinned",
+        write.log.file = FALSE)
+plotThin(AM_coords_thinned)
+
+#Thinned records #15 records
+
+AM_coords <-read.csv("AM_thinned/AM_thinned_thin1.csv")
+
+#Convert to spatial points dataframe and set projection
+coordinates(AM_coords) <- c('Lon', 'Lat')
+summary(AM_coords)
+crs.geo <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+proj4string(AM_coords) <- crs.geo  # define projection system of our data
+is.projected(AM_coords)
+summary(AM_coords)
+
+#Plot points to check location
+library(maps)
+names(envir)
+plot(envir[[20]])
+map(database = "usa")
+points(AM_coords)
+map(database = "usa")
+```
+AM Collinearity check
+```{r}
+#Check for multicollinearity amongst environmental variables
+envir<-stack(biocropped, elevres, deerres, landres, imperres, canopyres)
+
+extent(envir)
+names(envir)
+names(envir)[20] <-'Elevation'
+names(envir)[21] <-'DeerHabitat'
+names(envir)[29] <-'Impervious'
+names(envir)[30] <-'Canopy'
+names(envir)
+#Variance inflation factor
+vif(envir)
+
+#Extract climate values at sites of the species locations
+AM_ex_values<- raster::extract(envir, AM_coords)
+head(AM_ex_values)
+
+AM_v_cor<-vifcor(AM_ex_values) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+AM_v_cor
+
+AM_v_step<-vifstep(AM_ex_values) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+AM_v_step
+AM_envir_cur<-exclude(envir, AM_v_step)
+AM_envir_cur
+```
+AM historical
+```{r}
+#Building data object into the models
+
+AM_data_cur <- sdmData(Species_number~.,AM_coords, predictors = AM_envir_cur, bg =
+               list(method='gRandom', n=20))
+AM_data_cur
+
+#Fit current habitat model
+#AM_model_1 <- sdm(Species_number~., data = AM_data_cur, methods=c('glm','gam','bioclim','brt','cart','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+gui(AM_model_1) #GAM, BRT didn't work but better model overall
+
+AM_model_2<- sdm(Species_number~., data = AM_data_cur, methods=c('glm','maxent','rf','mars','cart', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+#BRT wasn't 100% successful
+
+library(shiny)
+gui(AM_model_1)
+gui(AM_model_2)
+
+#Current climate variable importance
+AM_vi_hist<- getVarImp(AM_model_2,id=151:180,wtest='test.dep')
+plot(AM_vi_hist)
+AM_vi_hist
+
+
+#Species response curves
+AM_hist_LC_responsecurve <-rcurve(AM_model_2, id=151:180, n=(c("Elevation", "Water", "Barren", "GrassShrub", "Cropland", "Wetland", "Canopy")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AM_hist_LC_responsecurve
+
+AM_hist_climate_responsecurve<-  rcurve(AM_model_2,id=151:180, n=(c("bio15", "bio18")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) + 
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AM_hist_climate_responsecurve
+
+#Generate current climate weighted ensemble
+AM_ensemble_cur <- ensemble(AM_model_2, AM_envir_cur, filename = 'AM_ensemble_hist_082222.tif', setting = list(method='mean-weighted', stat='tss', opt=2), overwrite=TRUE)
+AM_ensemble_cur
+plot(AM_ensemble_cur) #Current weighted ensemble
+
+AM_ensemble_hist_reprojected<-projectRaster(AM_ensemble_cur, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+
+```
+AM 2050
+```{r}
+#Future projections
+#Future range projections for AMMA (http://www.worldclim.com/cmip5_2.5m) under two time periods
+
+
+#Extract environmental points that correspond to AMMA occurrence data for specific time period
+AM_ex_values_50<- raster::extract(envir50, AM_coords)
+head(AM_ex_values_50)
+
+AM_v_cor_50<-vifcor(AM_ex_values_50) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+AM_v_cor_50
+
+AM_v_step_50<-vifstep(AM_ex_values_50) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+AM_v_step_50
+AM_envir_50<-exclude(envir50, AM_v_step_50)
+
+#Generate AM predictions for 2050
+AM_data_50 <- sdmData(Species_number~., AM_coords, predictors = AM_envir_50, bg =
+               list(method='gRandom', n=20))
+
+AM_model_2_50<- sdm(Species_number~., data = AM_data_50, methods=c('glm','cart','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+gui(AM_model_2_50)
+
+#2050 climate variable importance
+AM_vi_2050<- getVarImp(AM_model_2_50,id=151:180,wtest='test.dep')
+plot(AM_vi_2050)
+AM_vi_2050
+
+#Species response curves
+AM_2050_LC_responsecurve <-rcurve(AM_model_2_50, id=151:180, n=(c("Elevation", "Water", "Barren", "GrassShrub", "Cropland", "Wetland", "Canopy")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AM_2050_LC_responsecurve
+
+AM_2050_climate_responsecurve <-rcurve(AM_model_2_50, id=151:180, n=(c("bio16", "bio17")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80)+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) + 
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AM_2050_climate_responsecurve
+
+
+#2050 Ensemble Model
+
+AM_ensemble_fut50<-ensemble(AM_model_2_50, AM_envir_50, filename = 'AM_ensemble_50.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+
+AM_ensemble_fut50_reprojected<-projectRaster(AM_ensemble_fut50, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+```
+AM 2070
+```{r}
+# Future projections
+
+#Variables from 2061-2080 avg.
+biof70<-raster::getData('CMIP5', var='bio', res=2.5, rcp=85, model='AC', year=70) #4.5 km resolution at equator, rcp 8.5, ACCESS 1-0, avg. from 2061-2080.
+plot(biof70[[1]])
+names(biof70)<-names(bioclim)
+
+#Crop future climate raster to extent of IL
+biof70cropped <-crop(biof70, ILbb)
+envir70<-stack(biof70cropped, deerres, elevres, vegres)
+names(envir70)[20] <-'elev'
+names(envir70)[21] <-'deerhab'
+names(envir70)[22] <-'vegetation'
+
+#Extract environmental points that correspond to AMMA occurrence data for specific time period
+AM_ex_values_70<- raster::extract(envir70, AM_coords)
+head(AM_ex_values_70)
+
+AM_v_cor_70<-vifcor(AM_ex_values_70) #checks pairwise correlation (0.9 threshold) (excludes variable with highest vif)
+AM_v_cor_70
+
+AM_v_step_70<-vifstep(AM_ex_values_70) # greater than 10 = sign of multicollinearity (removes variables above threshold)
+AM_v_step_70
+AM_envir_70<-exclude(envir70, AM_v_step_70)
+
+#Generate AM predictions for 2070
+AM_data_70 <- sdmData(Species_number~., AM_coords, predictors = AM_envir_70, bg =
+               list(method='gRandom', n=20))
+AM_model_2_70<- sdm(Species_number~., data = AM_data_70, methods=c('glm','cart','maxent','rf','mars', 'svm'),replication=c('cv','boot'), test.p=30,n=5, parallelSetting=list(ncore=4, method='parallel'))
+gui(AM_model_2_70)
+
+#2070 climate variable importance
+AM_vi_2070<- getVarImp(AM_model_2_70,id=91:120, wtest='test.dep')
+plot(AM_vi_2070)
+AM_vi_2070
+
+#Species response curves
+AM_2070_LC_responsecurve <-rcurve(AM_model_2_70, id=91:120, n=(c("Elevation", "Water", "Barren", "GrassShrub", "Cropland", "Wetland", "Canopy")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80) +
+   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AM_2070_LC_responsecurve
+
+AM_2070_climate_responsecurve <-rcurve(AM_model_2_70, id=91:120, n=(c("bio15", "bio19")), gg=TRUE, mean = TRUE, confidence = TRUE, size=80)+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) + 
+  labs(x = "Measurement", y = "Percent Likelihood of Occurrence") +
+  theme(plot.title = element_blank())
+AM_2070_climate_responsecurve
+
+#2070 Ensemble Model
+AM_ensemble_fut70<-ensemble(AM_model_2_70, AM_envir_70, filename = 'AM_ensemble_70.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+
+AM_ensemble_fut70_reprojected<-projectRaster(AM_ensemble_fut70, crs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+
+cl<-colorRampPalette(c('lightyellow', 'yellow', 'orange', 'red', 'darkred', 'black'))
+plot(AM_ensemble_cur, col=cl(1000))
+plot(AM_ensemble_fut50, col=cl(1000))
+plot(AM_ensemble_fut70, col=cl(1000))
+```
+Final plots
+```{r}
+#Final A. maculatum ensemble rasters for current, 2050, 2070
+cl<-colorRampPalette(c('lightyellow', 'yellow', 'orange', 'red', 'darkred', 'black'))
+
+# Historical ensemble
+tiff("AM_ensemble_hist_082222.tiff", compression = "zip")
+plot(AM_ensemble_cur, col=cl(1000))
+gui(AM_model_2)
+AM_vi_current<-getVarImp(AM_model_2,id=61:91,wtest='test.dep')
+plot(AM_vi_current)
+dev.off()
+
+#2050 Ensemble
+AM_ensemble_fut50<-ensemble(AM_model_2_50, AM_envir_50, filename = 'AM_ensemble_50_082222.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+plot(AM_ensemble_fut50, col=cl(1000))
+tiff("AM_ensemble_50_082222.tiff", compression = "zip")
+
+#2070 Ensemble Model
+AM_ensemble_fut70<-ensemble(AM_model_2_70, AM_envir_70, filename = 'AM_ensemble_70_082222.tif', overwrite=TRUE, setting = list(method='mean-weighted', stat='tss', opt=2))
+plot(AM_ensemble_fut70, col=cl(1000))
+tiff("AM_ensemble_70_082222.tiff", compression = "zip")
+```
+Interactive maps
+```{r}
+#Current AMMA predicted distribution
+mapviewOptions(basemaps = "OpenStreetMap",
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+                 legend.pos = "topright",
+                 legend.opacity = 0.9)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(AM_ensemble_cur, col.regions=cl(1000), legend=TRUE, layer.name = 'Current Probability of A. maculatum Occurrence')
+
+  
+#Future AM predicted distribution avg. 2050
+  mapviewOptions((basemaps = "OpenStreetMap"),
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+               legend.pos = "topright",
+               legend.opacity = 1)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(AM_ensemble_fut50, col.regions=cl(1000), legend=TRUE, layer.name = 'Probability of Future A. maculatum Distribution 2050')   
+  
+#Future AM predicted distribution avg. 2070
+  mapviewOptions((basemaps = "OpenStreetMap"),
+                 raster.palette = grey.colors,
+                 vector.palette = colorRampPalette("black"),
+               legend.pos = "topright",
+               legend.opacity = 1)
+  mapview(IL_boundaries, legend=FALSE)+
+  mapview(AM_ensemble_fut70, col.regions=cl(1000), legend=TRUE, layer.name = 'Probability of Future A. maculatum Distribution 2070')   
+
+```
+
+Percent Change in Rasters
+I. scapularis
+```{r}
+#Ixodes scapularis
+IS_ensemble_hist_reprojected
+IS_ensemble_fut50_reprojected
+IS_ensemble_fut70_reprojected
+
+#Raster math
+IS_2050_change <- IS_ensemble_hist_reprojected - IS_ensemble_fut50_reprojected
+plot(IS_2050_change)
+hist(IS_2050_change)
+IS_2070_change <- IS_ensemble_hist_reprojected - IS_ensemble_fut70_reprojected
+plot(IS_2070_change)
+
+#Overlay function (more efficient)
+IXSC_change_histto2050 <- overlay(IS_ensemble_fut50_reprojected, IS_ensemble_hist_reprojected, fun=function(r1, r2){return(r1-r2)}, filename = "IXSC_change_histto2050.tif", overwrite = TRUE)
+plot(IXSC_change_histto2050)
+
+IXSC_xlab_50<-expression(paste("Percent Change in Likelihood of ",  italic("I.scapularis") ,  " Occurrence by 2050"))
+hist(IXSC_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2050")
+
+IXSC_change_2050to2070 <- overlay(IS_ensemble_fut70_reprojected, IS_ensemble_fut50_reprojected, fun=function(r1, r2){return(r1-r2)}, filename = "IXSC_change_2050to2070.tif", overwrite=TRUE )
+plot(IXSC_change_2050to2070)
+
+IXSC_xlab_70<-expression(paste("Percent Change in Likelihood of ",  italic("I.scapularis") ,  " Occurrence by 2070"))
+IXSC_change70_hist<-hist(IXSC_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2070")
+
+#Combining into single image
+par(mfrow=c(2,2))
+plot(IXSC_change_histto2050)
+plot(IXSC_change_2050to2070)
+
+#histograms alone
+IXSChist_2050<-hist(IXSC_change_histto2050,
+     xlim = c(-1,1),
+     ylim = c(0,3000),
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2050")
+IXSChist_2050
+
+IXSC2050_2070<- hist(IXSC_change_2050to2070,
+     main = " ",
+    xlim = c(-1,1),
+     ylim = c(0,3000),
+     ylab="Number of Pixels",
+     xlab="2070")
+IXSC2050_2070
+
+
+#Saving 
+# PNG device
+png(file="IXSChist_2050.png",
+pointsize = 12, width = 5, height = 3.5, unit="in", res = 300)
+hist(IXSC_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2050")
+dev.off()
+
+png(file="IXSC2050_2070.png",
+pointsize = 12, width = 5, height = 3.5, unit="in", res = 300)
+hist(IXSC_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2070")
+dev.off()
+
+
+
+
+```
+A. americanum percent change
+```{r}
+#Amblyomma americanum
+AA_ensemble_hist_reprojected
+AA_ensemble_fut50_reprojected
+AA_ensemble_fut70_reprojected
+
+
+#Calculating percent change
+#Overlay function (more efficient)
+AMAM_change_histto2050 <- overlay(AA_ensemble_fut50_reprojected, AA_ensemble_hist_reprojected, fun=function(r1, r2){return(r1-r2)}, filename= "AMAM_change_histto2050.tif", overwrite = TRUE)
+plot(AMAM_change_histto2050)
+
+AMAM_xlab_50<-expression(paste("Percent Change in Likelihood of ",  italic("A.americanum") ,  " Occurrence by 2050"))
+hist(AMAM_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2050")
+
+AMAM_change_2050to2070 <- overlay(AA_ensemble_fut70_reprojected, AA_ensemble_fut50_reprojected, fun=function(r1, r2){return(r1-r2)}, filename= "AMAM_change_2050to2070.tif", overwrite = TRUE)
+plot(AMAM_change_2050to2070)
+
+AMAM_xlab_70<-expression(paste("Percent Change in Likelihood of ",  italic("A.americanum") ,  " Occurrence by 2050"))
+hist(AMAM_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2070")
+
+#Combined figure
+par(mfrow=c(2,2))
+plot(AMAM_change_histto2050)
+plot(AMAM_change_2050to2070)
+
+AMAMhistto2050<-hist(AMAM_change_histto2050,
+     xlim = c(-1,1),
+     ylim = c(0,3000),
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2050")
+AMAM2050to2070<-hist(AMAM_change_2050to2070,
+     xlim = c(-1,1),
+     ylim = c(0,3000),
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2070")
+
+# PNG device
+png(file="AMAMhist_2050.png",
+pointsize = 12, width = 5, height = 3.5, unit="in", res = 300)
+hist(AMAM_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2050")
+dev.off()
+ 
+png(file="AMAM2050_2070.png",
+pointsize = 12, width = 5, height = 3.5, unit="in", res = 300)
+hist(AMAM_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2070")
+dev.off()
+```
+
+D. variabilis percent change
+```{r}
+DV_ensemble_hist_reprojected
+DV_ensemble_fut50_reprojected
+DV_ensemble_fut70_reprojected
+
+#Calculating percent change
+#Overlay function (more efficient)
+DEVA_change_histto2050 <- overlay(DV_ensemble_fut50_reprojected, DV_ensemble_hist_reprojected, fun=function(r1, r2){return(r1-r2)},  filename= "DEVA_change_histto2050.tif", overwrite = TRUE)
+plot(DEVA_change_histto2050)
+
+DEVA_xlab_50<-expression(paste("Percent Change in Likelihood of ",  italic("D. variabilis") ,  " Occurrence by 2050"))
+hist(DEVA_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2050")
+
+DEVA_change_2050to2070 <- overlay(DV_ensemble_fut70_reprojected, DV_ensemble_fut50_reprojected, fun=function(r1, r2){return(r1-r2)}, filename= "DEVA_change_2050to2070.tif", overwrite = TRUE)
+plot(DEVA_change_2050to2070)
+
+DEVA_xlab_70<-expression(paste("Percent Change in Likelihood of ",  italic("D. variabilis") ,  " Occurrence by 2050"))
+hist(DEVA_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2070")
+
+#Combined figure
+par(mfrow=c(2,2))
+plot(DEVA_change_histto2050)
+plot(DEVA_change_2050to2070)
+hist(DEVA_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2050")
+hist(DEVA_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2070")
+
+#Saving histograms
+
+# PNG device
+png(file="DEVAhist_2050.png",
+pointsize = 12, width = 5, height = 3.5, unit="in", res = 300)
+hist(DEVA_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2050")
+dev.off()
+
+png(file="DEVA2050_2070.png",
+pointsize = 12, width = 5, height = 3.5, unit="in", res = 300)
+hist(DEVA_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2070")
+dev.off()
+ 
+```
+
+A. maculatum
+```{r}
+AM_ensemble_hist_reprojected
+AM_ensemble_fut50_reprojected
+AM_ensemble_fut70_reprojected
+
+#Calculating percent change
+#Overlay function (more efficient)
+AM_change_histto2050 <- overlay(AM_ensemble_fut50_reprojected, AM_ensemble_hist_reprojected, fun=function(r1, r2){return(r1-r2)}, filename = "AM_change_histto2050.tif", overwrite = TRUE)
+plot(AM_change_histto2050)
+
+
+AM_xlab_50<-expression(paste("Percent Change in Likelihood of ",  italic("A. maculatum") ,  " Occurrence by 2050"))
+hist(AM_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2050")
+
+AM_change_2050to2070 <- overlay(AM_ensemble_fut70_reprojected, AM_ensemble_fut50_reprojected, fun=function(r1, r2){return(r1-r2)}, filename = "AM_change_2050to2070.tif", overwrite = TRUE)
+plot(AM_change_2050to2070)
+
+AM_xlab_70<-expression(paste("Percent Change in Likelihood of ",  italic("A. maculatum") ,  " Occurrence by 2050"))
+hist(AM_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2070")
+
+#Combined figure
+par(mfrow=c(2,2))
+plot(AM_change_histto2050)
+plot(AM_change_2050to2070)
+hist(AM_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2050")
+hist(AM_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2070")
+
+#Saving histograms
+
+# PNG device
+png(file="AMMAhist_2050.png",
+pointsize = 12, width = 5, height = 3.5, unit="in", res = 300)
+hist(AM_change_histto2050,
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2050")
+dev.off()
+
+png(file="AMMA2050_2070.png",
+pointsize = 12, width = 5, height = 3.5, unit="in", res = 300)
+hist(AM_change_2050to2070,
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2070")
+dev.off()
+```
+
+Histograms - Base R
+
+```{r}
+#I scapularis
+IXSChist_2050<-hist(IXSC_change_histto2050,
+     xlim = c(-1,1),
+     ylim = c(0,3000),
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2050")
+IXSChist_2050
+
+IXSC2050_2070<- hist(IXSC_change_2050to2070,
+     main = " ",
+    xlim = c(-1,1),
+     ylim = c(0,3000),
+     ylab="Number of Pixels",
+     xlab="2070")
+IXSC2050_2070
+
+
+
+#A. americanum
+AMAMhistto2050<-hist(AMAM_change_histto2050,
+     xlim = c(-1,1),
+     ylim = c(0,3000),
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2050")
+AMAMhistto2050
+
+AMAM2050to2070<-hist(AMAM_change_2050to2070,
+     xlim = c(-1,1),
+     ylim = c(0,3000),
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2070")
+AMAM2050to2070
+
+#D. variabilis
+
+DEVAhistto2050<-hist(DEVA_change_histto2050,
+     xlim = c(-1,1),
+     ylim = c(0,3000),                 
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2050")
+DEVAhistto2050
+
+DEVA2050to2070<-hist(DEVA_change_2050to2070,
+    xlim = c(-1,1),
+     ylim = c(0,3000), 
+     main = " ",
+     ylab="Number of Pixels",
+     xlab="2070")
+DEVA2050to2070
+
+#A maculatum
+AMMAhistto2050<-hist(AM_change_histto2050,
+     xlim = c(-1,1),
+     ylim = c(0,3000), 
+     main = " ",
+     ylab="Number of Pixels",
+  xlab="2050")
+AMMAhistto2050
+
+AMMA2050to2070<-hist(AM_change_2050to2070,
+    xlim = c(-1,1),
+    ylim = c(0,3000),      
+    main = " ",
+    ylab="Number of Pixels",
+  xlab="2070")
+AMMA2050to2070
+```
+
+Histograms - ggplot
+
+```{r}
+library(ggplot2)
+#Iscap
+
+IXSC2050counts<-as.data.frame(IXSChist_2050$counts)
+IXSC2050density<-as.data.frame(IXSChist_2050$density)
+                               
+IXSC2070counts<-as.data.frame(IXSC2050_2070$counts)
+IXSC2070density<-as.data.frame(IXSC2050_2070$density)
+IXSC20502070<-rbind(IXSC2050counts, IXSC2050density, IXSC2070counts, IXSC2070density)
+
+ggIXSChist2050 <- ggplot(IXSC2050, aes(x=density,y=counts)) +
+  geom_histogram(fill="white", alpha=0.5, position="identity")
+ggIXSChist2050
+
+ggIXSC20502070
+
+#Amer
+ggAMAMhist2050
+
+ggAMAM20502070
+
+#Deva
+
+ggDEVAhist2050
+ggDEVA20502070
+
+#Amac
+
+ggAMMAhist2050
+ggAMMA20502070
+```
+
+
+Raster change TIFF files
+```{r}
+
+IS
+plot(IXSC_change_2050, filename="IXSC_change_2050.tif" )
+tiff("IXSC_change_2050.tiff", compression = "zip")
+dev.off()
+
+plot(IXSC_change_2070)
+tiff("IXSC_change_2070.tiff", compression = "zip")
+dev.off()
+
+AA
+
+DV
+
+AM
+```
+

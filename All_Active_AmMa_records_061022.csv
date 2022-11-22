@@ -1,0 +1,21 @@
+Species_name,Species_number,Lon,Lat,Year,CoordinateUncertaintyInMeters,Database,OriginalSource,geodeticDatum
+Amblyomma maculatum,1,-88.172775,41.26252,2021,25,iNaturalist,iNaturalist,WGS84
+Amblyomma maculatum,1,-89.016701,40.536039,2021,102,iNaturalist,iNaturalist,WGS84
+Amblyomma maculatum,1,-89.878576,40.40062,2015,188,iNaturalist,iNaturalist,WGS84
+Amblyomma maculatum,1,-88.29027,40.131933,2015,188,iNaturalist,iNaturalist,WGS84
+Amblyomma maculatum,1,-90.154274,38.465383,2021,208,iNaturalist,iNaturalist,WGS84
+Amblyomma maculatum,1,-89.378229,41.894485,2021,343,iNaturalist,iNaturalist,WGS84
+Amblyomma maculatum,1,-88.204623,40.080317,2021,994,iNaturalist,iNaturalist,WGS84
+Amblyomma maculatum,1,-89.91678619,40.23964691,2015,20000,BISON,BugGuide,WGS84
+Amblyomma maculatum,1,-88.19918823,40.14008331,2015,20000,BISON,BugGuide,WGS84
+Amblyomma maculatum,1,-89.87857819,40.40061951,2015,188,iNaturalist.org,iNaturalist Research-grade Observations,WGS84
+Amblyomma maculatum,1,-88.29026794,40.1319313,2015,188,iNaturalist.org,iNaturalist Research-grade Observations,WGS84
+Amblyomma maculatum,1,-87.62772369,41.90965652,2017,20000,iNaturalist.org,iNaturalist Research-grade Observations,WGS84
+Amblyomma maculatum,1,-89.5983963,40.71789932,1990,20000,Illinois Natural History Survey,Illinois Natural History Survey Insect Collection,WGS84
+Amblyomma maculatum,1,-89.24353133,37.71614528,2019,10,UIUCVetMed,BlitzDrags,WGS84
+Amblyomma maculatum,1,-88.10944444,39.3025,2018,10,UIUCVetMed,BlitzDrags,WGS84
+Amblyomma maculatum,1,-88.70717354,39.06652469,2018,10,UIUCVetMed,BlitzDrags,WGS84
+Amblyomma maculatum,1,-89.023073,39.820967,2018,10,UIUCVetMed,BlitzDrags,WGS84
+Amblyomma maculatum,1,-89.023073,39.820967,2018,10,UIUCVetMed,BlitzDrags,WGS84
+Amblyomma maculatum,1,-89.023073,39.820967,2018,10,UIUCVetMed,BlitzDrags,WGS84
+Amblyomma maculatum,1,-89.023073,39.820967,2018,10,UIUCVetMed,BlitzDrags,WGS84
